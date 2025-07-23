@@ -2,6 +2,7 @@
  * This is the simplest possible implementation: a "Standalone Worker".
  * It is designed to run on a single pod ONLY and has no external dependencies
  * like Redis or RabbitMQ for locking or queueing.
+ * This solution is vertically scalable, meaning we can only scale this by increasing the machine stats: memory, cpu
  *
  * - It uses an in-memory boolean flag to prevent cron job overlaps.
  * - It uses an in-memory library ('p-limit') to process files concurrently.
