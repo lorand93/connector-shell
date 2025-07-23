@@ -31,7 +31,14 @@ class SchedulerService {
       // Set the lock
       this.isScanRunning = true;
       console.log('Starting SharePoint scan...');
-      await this.sharepointScanner.startScanAndProcess();
+
+      // Step 1: Find all the work that needs to be done.
+      const { filesToProcess, sitesToDelete } = await this.sharepointScanner.scanForWork();
+      console.log(`Found ${filesToProcess.length} files to process and ${sitesToDelete.length} sites to delete.`);
+
+      // Step 2: Execute the work that was found.
+      await this.sharepointScanner.processWork(filesToProcess, sitesToDelete);
+
     } catch (error) {
       console.error('An error occurred during the scan.', error);
     } finally {
@@ -52,30 +59,50 @@ class SharePointScannerService {
     private readonly configService: ConfigService,
   ) {}
 
-  async startScanAndProcess() {
+  /**
+   * Scans SharePoint to identify all files to be processed and all sites to be deleted.
+   * This method only finds work; it does not execute it.
+   */
+  async scanForWork(): Promise<{ filesToProcess: any[]; sitesToDelete: any[] }> {
     const sites = await this.graphApiService.getConfiguredSites();
-    const allFilesToProcess = [];
+    const filesToProcess = [];
+    const sitesToDelete = [];
 
     for (const site of sites) {
       if (site.isMarkedForDeletion) {
-        // In this simple model, we process deletions immediately
-        await this.pipelineService.deleteSitePipeline(site.id);
+        sitesToDelete.push(site);
       } else {
         const files = await this.graphApiService.getFilesToSync(site.id);
-        allFilesToProcess.push(...files);
+        filesToProcess.push(...files);
       }
     }
+    return { filesToProcess, sitesToDelete };
+  }
 
-    // Process all identified files using an in-memory concurrency limiter
+  /**
+   * Processes the lists of work identified by the scanForWork method.
+   */
+  async processWork(filesToProcess: any[], sitesToDelete: any[]): Promise<void> {
+    // Process deletions sequentially first.
+    for (const site of sitesToDelete) {
+      await this.pipelineService.deleteSitePipeline(site.id);
+    }
+
+    // Process file ingestions concurrently using an in-memory limiter.
     const concurrency = this.configService.get('PROCESSING_CONCURRENCY', 4);
     const limit = pLimit(concurrency);
 
-    const processingPromises = allFilesToProcess.map(file => {
+    const processingPromises = filesToProcess.map(file => {
       return limit(() => this.pipelineService.processFilePipeline(file));
     });
 
-    // Wait for all files to be processed
-    await Promise.all(processingPromises);
+    // Wait for all file processing promises to settle (either succeed or fail).
+    const results = await Promise.allSettled(processingPromises);
+
+    // Optional: Log a summary of the outcomes.
+    const successfulCount = results.filter(r => r.status === 'fulfilled').length;
+    const failedCount = results.length - successfulCount;
+    console.log(`File processing complete. Succeeded: ${successfulCount}, Failed: ${failedCount}`);
   }
 }
 
@@ -103,8 +130,8 @@ class PipelineService {
       console.log(`Successfully processed file: ${file.id}`);
     } catch (error) {
       console.error(`Error processing file ${file.id}:`, error);
-      // In this simple model, an error in one file does not stop others,
-      // but it will be logged. There are no automatic retries.
+      // Re-throw the error so Promise.allSettled can catch it as a 'rejected' status.
+      throw error;
     }
   }
 
