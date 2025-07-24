@@ -47,6 +47,7 @@ class SharePointScannerService {
     private readonly queueService: QueueService,
   ) {}
 
+  // this is just a simplification
   async startScan() {
     const sites = await this.graphApiService.getConfiguredSites();
 
